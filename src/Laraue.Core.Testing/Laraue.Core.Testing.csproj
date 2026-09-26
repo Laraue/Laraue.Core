@@ -3,7 +3,7 @@
     <PropertyGroup>
         <Description>Reusable test infrastructure: an expression-based HTTP proxy for calling ASP.NET Core controller actions in integration tests.</Description>
         <IsPackable>true</IsPackable>
-        <Version>10.2.0</Version>
+        <Version>10.3.0</Version>
     </PropertyGroup>
 
     <ItemGroup>

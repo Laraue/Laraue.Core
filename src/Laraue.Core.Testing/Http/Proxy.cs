@@ -153,9 +153,18 @@ public class Proxy<TController>(HttpClient client, IServiceProvider services) wh
                 continue;
             }
 
+            // ASP.NET Core binds the single [FromBody] parameter to the whole request body, so send the
+            // argument's value as the body as-is - serialized with its own JSON contract
+            // ([JsonPropertyName], converters), whatever expression produced it.
+            if (arg.BindType == BindType.FromBody)
+            {
+                bound.Body = Expression.Lambda(arg.Expression).Compile().DynamicInvoke();
+                bound.HasBody = true;
+                continue;
+            }
+
             var target = arg.BindType switch
             {
-                BindType.FromBody => bound.Body,
                 BindType.FromPath => bound.Path,
                 BindType.FromQuery => bound.Query,
                 _ => null
@@ -455,7 +464,9 @@ public class Proxy<TController>(HttpClient client, IServiceProvider services) wh
             return (multipartContent, description);
         }
 
-        var bodyString = JsonSerializer.Serialize(boundArguments.Body, JsonOptions);
+        var bodyString = boundArguments.HasBody
+            ? JsonSerializer.Serialize(boundArguments.Body, boundArguments.Body?.GetType() ?? typeof(object), JsonOptions)
+            : "{}";
         return (new StringContent(bodyString, Encoding.UTF8, "application/json"), bodyString);
     }
 
@@ -495,7 +506,8 @@ public class Proxy<TController>(HttpClient client, IServiceProvider services) wh
     private sealed class BoundArguments
     {
         public Dictionary<string, object?> Query { get; } = new();
-        public Dictionary<string, object?> Body { get; } = new();
+        public object? Body { get; set; }
+        public bool HasBody { get; set; }
         public Dictionary<string, object?> Path { get; } = new();
         public Dictionary<string, List<object?>> Form { get; } = new();
         public Dictionary<string, List<IFormFile>> Files { get; } = new();
@@ -517,15 +529,19 @@ public class Proxy<TController>(HttpClient client, IServiceProvider services) wh
             var error =
                 $"[{response.RequestMessage?.Method}] {response.RequestMessage?.RequestUri} ({response.StatusCode:D}) \nRequest Content: {bodyDescription}\nResponse Content:{responseContent}";
 
+            // E.g. a 401 from the authentication middleware has no body - still report the status code.
+            if (string.IsNullOrWhiteSpace(responseContent))
+                throw new HttpRequestException(error, null, response.StatusCode);
+
             ErrorResponse? errorResponse;
 
             try
             {
                 errorResponse = JsonSerializer.Deserialize<ErrorResponse>(responseContent, JsonOptions)!;
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-                throw new Exception($"Undeserializable response was taken: {error}");
+                throw new HttpRequestException($"Undeserializable response was taken: {error}", ex, response.StatusCode);
             }
 
             Exception? inner = response.StatusCode switch
